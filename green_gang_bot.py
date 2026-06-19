@@ -27,6 +27,12 @@ YTDL_OPTIONS = {
     "no_warnings": True,
     "default_search": "auto",
     "source_address": "0.0.0.0",
+    # Use Android player client to bypass YouTube bot detection on datacenter IPs
+    "extractor_args": {
+        "youtube": {
+            "player_client": ["android", "web"],
+        }
+    },
 }
 
 FFMPEG_OPTIONS = {
@@ -91,6 +97,10 @@ async def join_and_play(guild: discord.Guild):
         log.info("Lofi stream started.")
     except Exception as e:
         log.error(f"Failed to start stream: {e}")
+        # Report the error to the notify channel so you can see what's wrong
+        notify_channel = bot.get_channel(NOTIFY_CHANNEL_ID)
+        if notify_channel:
+            await notify_channel.send(f"⚠️ Music failed to start: `{e}`")
 
 
 # ─── Reconnect loop (every 60s checks if bot is still in VC) ──────────────────
@@ -194,10 +204,15 @@ async def stop(ctx):
 @commands.is_owner()
 async def start(ctx):
     """Rejoin VC and start playing again."""
+    await ctx.send("⏳ Connecting and fetching stream, please wait...")
     await join_and_play(ctx.guild)
     if not reconnect_check.is_running():
         reconnect_check.start()
-    await ctx.send("▶️ Started.")
+    vc = ctx.guild.voice_client
+    if vc and vc.is_playing():
+        await ctx.send("▶️ Music is playing!")
+    else:
+        await ctx.send("❌ Failed to start — check the notify channel for the error.")
 
 
 # ─── Run ───────────────────────────────────────────────────────────────────────
