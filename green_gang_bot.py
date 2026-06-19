@@ -2,7 +2,6 @@ import discord
 from discord.ext import commands, tasks
 import asyncio
 import os
-import yt_dlp
 import logging
 
 # ─── Logging ───────────────────────────────────────────────────────────────────
@@ -15,41 +14,15 @@ GUILD_ID         = int(os.environ["GUILD_ID"])           # Your server ID
 SUPPORT_VC_ID    = int(os.environ["SUPPORT_VC_ID"])      # Voice channel to sit in
 NOTIFY_CHANNEL_ID= int(os.environ["NOTIFY_CHANNEL_ID"])  # Text channel for alerts
 OWNER_ID         = int(os.environ["OWNER_ID"])           # Your Discord user ID
+SUPPORT_ADMIN_ROLE_ID = 705613555474366515               # Support Admin role to ping on join
 
-# Lofi 24/7 YouTube stream (chill waiting room vibe)
-LOFI_STREAM_URL  = "https://www.youtube.com/watch?v=jfKfPfyJRdk"
-
-# ─── YT-DLP options ────────────────────────────────────────────────────────────
-YTDL_OPTIONS = {
-    "format": "bestaudio/best",
-    "noplaylist": True,
-    "quiet": True,
-    "no_warnings": True,
-    "default_search": "auto",
-    "source_address": "0.0.0.0",
-    # Use Android player client to bypass YouTube bot detection on datacenter IPs
-    "extractor_args": {
-        "youtube": {
-            "player_client": ["android", "web"],
-        }
-    },
-}
+# Direct lofi radio stream — no yt-dlp needed, works reliably from any server IP
+LOFI_STREAM_URL = "http://ice1.somafm.com/groovesalad-256-mp3"
 
 FFMPEG_OPTIONS = {
     "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
     "options": "-vn",
 }
-
-ytdl = yt_dlp.YoutubeDL(YTDL_OPTIONS)
-
-
-async def get_audio_url(url: str) -> str:
-    """Extract direct audio stream URL from YouTube."""
-    loop = asyncio.get_event_loop()
-    data = await loop.run_in_executor(None, lambda: ytdl.extract_info(url, download=False))
-    if "entries" in data:
-        data = data["entries"][0]
-    return data["url"]
 
 
 # ─── Bot setup ─────────────────────────────────────────────────────────────────
@@ -69,7 +42,6 @@ async def join_and_play(guild: discord.Guild):
         log.error("Support VC not found. Check SUPPORT_VC_ID.")
         return
 
-    # Connect or move if already in another channel
     voice_client = guild.voice_client
     if voice_client:
         if voice_client.channel.id != SUPPORT_VC_ID:
@@ -77,27 +49,23 @@ async def join_and_play(guild: discord.Guild):
     else:
         voice_client = await vc_channel.connect()
 
-    # Don't restart music if already playing
     if voice_client.is_playing():
         return
 
-    log.info("Fetching lofi stream URL...")
+    log.info("Starting lofi stream...")
     try:
-        audio_url = await get_audio_url(LOFI_STREAM_URL)
-        source = discord.FFmpegPCMAudio(audio_url, **FFMPEG_OPTIONS)
+        source = discord.FFmpegPCMAudio(LOFI_STREAM_URL, **FFMPEG_OPTIONS)
         source = discord.PCMVolumeTransformer(source, volume=0.4)
 
         def after_play(error):
             if error:
                 log.error(f"Playback error: {error}")
-            # Auto-restart when stream ends
             asyncio.run_coroutine_threadsafe(join_and_play(guild), bot.loop)
 
         voice_client.play(source, after=after_play)
         log.info("Lofi stream started.")
     except Exception as e:
         log.error(f"Failed to start stream: {e}")
-        # Report the error to the notify channel so you can see what's wrong
         notify_channel = bot.get_channel(NOTIFY_CHANNEL_ID)
         if notify_channel:
             await notify_channel.send(f"⚠️ Music failed to start: `{e}`")
@@ -130,7 +98,6 @@ async def on_ready():
 
 @bot.event
 async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
-    # Only care about joins into the support VC
     if member.bot:
         return
     if after.channel and after.channel.id == SUPPORT_VC_ID and (not before.channel or before.channel.id != SUPPORT_VC_ID):
@@ -148,12 +115,10 @@ async def notify_join(member: discord.Member):
     embed.set_thumbnail(url=member.display_avatar.url)
     embed.set_footer(text=f"User ID: {member.id}")
 
-    # Send to notify text channel
     notify_channel = bot.get_channel(NOTIFY_CHANNEL_ID)
     if notify_channel:
-        await notify_channel.send(embed=embed)
+        await notify_channel.send(f"<@&{SUPPORT_ADMIN_ROLE_ID}>", embed=embed)
 
-    # DM the owner
     try:
         owner = await bot.fetch_user(OWNER_ID)
         await owner.send(embed=embed)
@@ -165,7 +130,6 @@ async def notify_join(member: discord.Member):
 @bot.command(name="rejoin")
 @commands.is_owner()
 async def rejoin(ctx):
-    """Force the bot to rejoin and restart the stream."""
     guild = ctx.guild
     vc = guild.voice_client
     if vc:
@@ -177,7 +141,6 @@ async def rejoin(ctx):
 @bot.command(name="volume")
 @commands.is_owner()
 async def volume(ctx, vol: int):
-    """Set volume 0–100. Example: !volume 50"""
     vc = ctx.guild.voice_client
     if not vc or not vc.source:
         await ctx.send("❌ Not playing anything right now.")
@@ -192,7 +155,6 @@ async def volume(ctx, vol: int):
 @bot.command(name="stop")
 @commands.is_owner()
 async def stop(ctx):
-    """Stop music and leave VC."""
     vc = ctx.guild.voice_client
     if vc:
         reconnect_check.stop()
@@ -203,7 +165,6 @@ async def stop(ctx):
 @bot.command(name="start")
 @commands.is_owner()
 async def start(ctx):
-    """Rejoin VC and start playing again."""
     await ctx.send("⏳ Connecting and fetching stream, please wait...")
     await join_and_play(ctx.guild)
     if not reconnect_check.is_running():
